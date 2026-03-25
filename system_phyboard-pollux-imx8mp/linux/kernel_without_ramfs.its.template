@@ -1,7 +1,7 @@
 /dts-v1/;
 
 / {
-    description = "FIT Image Without ramfs for Kontron AL/BL i.MX8M Mini";
+    description = "FIT Image Without ramfs for phyBOARD-Pollux i.MX8M Plus";
     #address-cells = <1>;
 
     images {
