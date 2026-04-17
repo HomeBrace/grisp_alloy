@@ -2,7 +2,7 @@ OS_RELEASE_PRETTY_NAME="phyBOARD-Pollux i.MX8M Plus"
 
 BOOTSCHEME=AHAB
 BOOTSCHEME_KERNEL_FILENAME=Image
-BOOTSCHEME_DTB_FILENAME=imx8mp-phyboard-pollux-rdk.dtb
+BOOTSCHEME_DTB_FILENAME=imx8mp-phyboard-pollux-rdk-wlbt05.dtb
 BOOTSCHEME_KERNEL_ITS_WITHOUT_RAMFS=kernel_without_ramfs.its.template
 BOOTSCHEME_KERNEL_ITS_WITH_RAMFS=kernel_with_ramfs.its.template
 
