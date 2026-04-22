@@ -1,0 +1,166 @@
+name: Build SDK (phyboard-pollux-imx8mp)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'system_common/**'
+      - 'system_phyboard-pollux-imx8mp/**'
+      - 'scripts/**'
+      - 'build-sdk.sh'
+      - '.github/workflows/build-sdk.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'system_common/**'
+      - 'system_phyboard-pollux-imx8mp/**'
+      - 'scripts/**'
+      - 'build-sdk.sh'
+      - '.github/workflows/build-sdk.yml'
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Build target'
+        required: true
+        default: 'phyboard-pollux-imx8mp'
+        type: choice
+        options:
+          - phyboard-pollux-imx8mp
+      clean:
+        description: 'Clean build (ignore caches)'
+        required: false
+        default: false
+        type: boolean
+      wifi_module:
+        description: 'WiFi/BLE module variant'
+        required: true
+        default: 'lwb5'
+        type: choice
+        options:
+          - lwb5
+          - lwb5plus
+
+env:
+  TARGET: ${{ github.event.inputs.target || 'phyboard-pollux-imx8mp' }}
+  WIFI_MODULE: ${{ github.event.inputs.wifi_module || 'lwb5' }}
+  # Tag of the toolchain release in this repo (create once with: gh release create toolchain-v1.1 artefacts/grisp_toolchain_*.tar.xz)
+  TOOLCHAIN_RELEASE_TAG: toolchain-v1.1
+
+jobs:
+  build-sdk:
+    name: Build SDK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential libncurses5-dev \
+            pv git bzr cvs mercurial subversion unzip bc \
+            bison flex gperf texinfo help2man \
+            libssl-dev gawk libtool-bin automake lzip python3 mtools \
+            u-boot-tools git-lfs keyutils qemu-user qemu-user-static \
+            gcc-x86-64-linux-gnu binutils-x86-64-linux-gnu \
+            cpio wget squashfs-tools
+
+      - name: Prepare /opt/grisp_alloy_sdk
+        run: |
+          sudo mkdir -p /opt/grisp_alloy_sdk
+          sudo chown $USER:$USER /opt/grisp_alloy_sdk
+
+      - name: Download toolchain from release
+        run: |
+          mkdir -p artefacts
+          gh release download "$TOOLCHAIN_RELEASE_TAG" \
+            --pattern 'grisp_toolchain_aarch64_unknown_linux_gnu-*.tar.xz' \
+            --dir artefacts/
+          echo "Toolchain downloaded:"
+          ls -lh artefacts/grisp_toolchain_*.tar.xz
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Select WiFi module firmware
+        run: |
+          TARGET_DIR="system_phyboard-pollux-imx8mp"
+
+          if [ "${{ env.WIFI_MODULE }}" = "lwb5plus" ]; then
+            echo "::notice::Selecting Sterling-LWB5+ (CYW4373) firmware"
+            sed -i 's/^BR2_PACKAGE_LINUX_FIRMWARE_CYPRESS_CYW43XXX=y/#BR2_PACKAGE_LINUX_FIRMWARE_CYPRESS_CYW43XXX=y/' "$TARGET_DIR/defconfig"
+            sed -i 's/^#BR2_PACKAGE_LINUX_FIRMWARE_CYPRESS_CYW43XX=y/BR2_PACKAGE_LINUX_FIRMWARE_CYPRESS_CYW43XX=y/' "$TARGET_DIR/defconfig"
+            cp -r "$TARGET_DIR/rootfs_firmware_overlay_lwb5plus/lib" "$TARGET_DIR/rootfs_overlay/"
+          else
+            echo "::notice::Selecting Sterling-LWB5 (CYW43455) firmware (default)"
+            cp -r "$TARGET_DIR/rootfs_firmware_overlay_lwb5/lib" "$TARGET_DIR/rootfs_overlay/"
+          fi
+
+          echo "Firmware overlay:"
+          find "$TARGET_DIR/rootfs_overlay/lib/firmware" -type f 2>/dev/null || true
+
+      - name: Cache Buildroot downloads
+        uses: actions/cache@v4
+        with:
+          path: _cache/system
+          key: buildroot-dl-${{ env.TARGET }}-${{ hashFiles('system_common/defconfig', 'system_phyboard-pollux-imx8mp/defconfig') }}
+          restore-keys: |
+            buildroot-dl-${{ env.TARGET }}-
+
+      - name: Build SDK
+        run: |
+          if [ "${{ github.event.inputs.clean }}" = "true" ]; then
+            ./build-sdk.sh --clean ${{ env.TARGET }}
+          else
+            ./build-sdk.sh ${{ env.TARGET }}
+          fi
+
+      - name: Determine version
+        id: version
+        run: |
+          COMMON_VER=$(cat system_common/VERSION)
+          TARGET_VER=$(cat system_phyboard-pollux-imx8mp/VERSION)
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          SDK_TAG="sdk-${COMMON_VER}-${{ env.TARGET }}-${TARGET_VER}-${{ env.WIFI_MODULE }}"
+          echo "sdk_tag=${SDK_TAG}" >> "$GITHUB_OUTPUT"
+          echo "common_ver=${COMMON_VER}" >> "$GITHUB_OUTPUT"
+          echo "target_ver=${TARGET_VER}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Create release
+        run: |
+          SDK_TAG="${{ steps.version.outputs.sdk_tag }}"
+          SHORT_SHA="${{ steps.version.outputs.short_sha }}"
+
+          # Delete existing release with same tag if it exists
+          gh release delete "$SDK_TAG" --yes 2>/dev/null || true
+          git push origin --delete "refs/tags/$SDK_TAG" 2>/dev/null || true
+
+          gh release create "$SDK_TAG" \
+            --title "SDK: ${{ env.TARGET }} (${{ env.WIFI_MODULE }}) @ ${SHORT_SHA}" \
+            --notes "$(cat <<'NOTES'
+          ## Build Info
+
+          - **Target:** ${{ env.TARGET }}
+          - **WiFi/BLE module:** ${{ env.WIFI_MODULE }}
+          - **Common version:** ${{ steps.version.outputs.common_ver }}
+          - **Target version:** ${{ steps.version.outputs.target_ver }}
+          - **Commit:** ${SHORT_SHA}
+          - **Trigger:** ${{ github.event_name }}
+
+          ## WiFi/BLE Module
+
+          ${{ env.WIFI_MODULE == 'lwb5plus' && 'Sterling-LWB5+ (CYW4373, BT 5.0)' || 'Sterling-LWB5 (CYW43455, BT 4.2)' }}
+
+          See `PEB-WLBT-05.md` in the repo for switching instructions.
+          NOTES
+          )" \
+            artefacts/grisp_alloy_sdk-*.tar.gz
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
