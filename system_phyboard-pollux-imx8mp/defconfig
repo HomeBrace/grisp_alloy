@@ -104,6 +104,9 @@ BR2_PACKAGE_LIBGPIOD_TOOLS=y
 # USB utilities
 BR2_PACKAGE_USBUTILS=y
 
+# USB gadget ( ethernet over USB )
+CONFIG_USB_NET_CDC_NCM=y
+
 # PEB-WLBT-05 WiFi/BLE support
 #
 # WiFi firmware — choose ONE matching your Sterling module:
