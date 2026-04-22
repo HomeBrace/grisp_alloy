@@ -22,7 +22,10 @@
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 #include <dt-bindings/leds/leds-pca9532.h>
 #include <dt-bindings/pwm/pwm.h>
-#include "imx8mp-phycore-som.dtsi"
+/* freescale/ prefix: Buildroot's BR2_LINUX_KERNEL_CUSTOM_DTS_PATH copies
+ * this DTS to arch/arm64/boot/dts/, one level above the .dtsi's location.
+ */
+#include "freescale/imx8mp-phycore-som.dtsi"
 
 / {
 	model = "PHYTEC phyBOARD-Pollux i.MX8MP";
