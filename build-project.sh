@@ -31,11 +31,13 @@ show_usage()
     echo " -c | --clean"
     echo "    Cleanup the curent state and start from scratch"
     echo " -V | --force-vagrant"
-    echo "    Using the Vagrant VM even on Linux"
+    echo "    Using the Vagrant VM even on Linux (mutually exclusive with -D)"
+    echo " -D | --docker"
+    echo "    Run the build inside the Docker builder image (mutually exclusive with -V)"
     echo " -P | --provision"
-    echo "    Re-provision the vagrant VM; use to reflect some changes to the VM"
+    echo "    Re-provision the Vagrant VM, or rebuild the Docker image when used with -D"
     echo " -K | --keep-vagrant"
-    echo "    Keep the vagrant VM running after exiting"
+    echo "    Keep the Vagrant VM running after exiting (no effect with -D)"
     echo " -p | --profile <PROFILE>"
     echo "    Project profile to build (default: default)"
     echo
@@ -49,6 +51,7 @@ args_add h help ARG_SHOW_HELP flag true false
 args_add d debug ARG_DEBUG flag 1 0
 args_add c clean ARG_CLEAN flag true false
 args_add V force-vagrant ARG_FORCE_VAGRANT flag true false
+args_add D docker ARG_FORCE_DOCKER flag true false
 args_add P provision ARG_PROVISION_VAGRANT flag true false
 args_add K keep-vagrant ARG_KEEP_VAGRANT flag true false
 args_add p profile ARG_PROJECT_PROFILE value "default"
@@ -95,10 +98,115 @@ RSYNC_CMD=( rsync -aqH --copy-links --delete --exclude='_build/' --exclude='*.be
 
 set_debug_level "$ARG_DEBUG"
 
+if [[ $ARG_FORCE_DOCKER == true && $ARG_FORCE_VAGRANT == true ]]; then
+    error 1 "-D/--docker and -V/--force-vagrant are mutually exclusive"
+fi
+
+if [[ $ARG_FORCE_DOCKER == true ]]; then
+    USE_DOCKER=true
+    USE_VAGRANT=false
+elif [[ $ARG_FORCE_VAGRANT == true || $HOST_OS != "linux" ]]; then
+    USE_DOCKER=false
+    USE_VAGRANT=true
+else
+    USE_DOCKER=false
+    USE_VAGRANT=false
+fi
+
+# DOCKER EXECUTION BLOCK
+# Forwards MALEA_ROOT (and any project tree it points to) into the container
+# so Mix path: deps under apps/ resolve correctly. The repo and any external
+# project dir are bind-mounted; named volumes carry the SDK and _build/_cache.
+if [[ $USE_DOCKER == true ]]; then
+    cd "$GLB_TOP_DIR"
+    if [[ $ARG_PROVISION_VAGRANT == true ]]; then
+        "${GLB_TOP_DIR}/docker/build-image.sh" --no-cache
+    fi
+
+    DOCKER_EXTRA_MOUNTS=()
+    DOCKER_EXTRA_ENV=()
+    MALEA_ROOT_ABS=""
+
+    # Forward MALEA_ROOT and bind-mount it RW (path: deps build _build/ inside).
+    if [[ -n "${MALEA_ROOT:-}" ]]; then
+        if [[ ! -d "$MALEA_ROOT" ]]; then
+            error 1 "MALEA_ROOT directory not found: $MALEA_ROOT"
+        fi
+        MALEA_ROOT_ABS="$( cd "$MALEA_ROOT" && pwd )"
+        DOCKER_EXTRA_MOUNTS+=( "${MALEA_ROOT_ABS}:/external/malea_root" )
+        DOCKER_EXTRA_ENV+=( "MALEA_ROOT=/external/malea_root" )
+
+        # Strip host-arch (macOS/Windows) NIFs from path: deps. Rustler's
+        # skip_compilation? flag stops Cargo from running on Linux, but
+        # mix release still bundles any priv/native/*.so left behind by
+        # a prior host-side build, and scrub-otp-release.sh then rejects
+        # it as a wrong-arch binary. These files are gitignored, so this
+        # only nukes regeneratable build artifacts.
+        stale=$( find "$MALEA_ROOT_ABS" -type f \
+            \( -path '*/priv/native/*.so' \
+               -o -path '*/priv/native/*.dylib' \) 2>/dev/null )
+        if [[ -n "$stale" ]]; then
+            echo "Removing host-arch NIFs from $MALEA_ROOT_ABS:"
+            echo "$stale" | sed 's/^/  /'
+            echo "$stale" | xargs rm -f
+        fi
+    fi
+
+    # Forward any path: deps that live outside MALEA_ROOT. Honors
+    # BLUE_HERON_PATH; falls back to ${MALEA_ROOT}/../blue_heron when
+    # the env var isn't set. Mounted at /external/blue_heron so the
+    # relative `../../../blue_heron` in alloy_imx8mp/mix.exs resolves
+    # identically inside the container.
+    BH_HOST=""
+    if [[ -n "${BLUE_HERON_PATH:-}" ]]; then
+        BH_HOST="$BLUE_HERON_PATH"
+    elif [[ -n "$MALEA_ROOT_ABS" && -d "${MALEA_ROOT_ABS}/../blue_heron" ]]; then
+        BH_HOST="${MALEA_ROOT_ABS}/../blue_heron"
+    fi
+    if [[ -n "$BH_HOST" && -d "$BH_HOST" ]]; then
+        BH_HOST_ABS="$( cd "$BH_HOST" && pwd )"
+        echo "Bind-mounting blue_heron path dep: $BH_HOST_ABS"
+        DOCKER_EXTRA_MOUNTS+=( "${BH_HOST_ABS}:/external/blue_heron" )
+        # Tell mix.exs in the project tree where to find the path: dep.
+        # The default relative path (../../../blue_heron) resolves on the
+        # host but not inside the container, where mix runs out of a
+        # rsync'd /work/_build/project/builds/... tree.
+        DOCKER_EXTRA_ENV+=( "BLUE_HERON_PATH=/external/blue_heron" )
+    fi
+
+    # Translate project path to its in-container equivalent.
+    if [[ "$SOURCE_PROJECT_DIR" == ${GLB_TOP_DIR}/* ]]; then
+        REL="${SOURCE_PROJECT_DIR#${GLB_TOP_DIR}/}"
+        CONTAINER_PROJECT_DIR="${GLB_DOCKER_WORKDIR}/${REL}"
+    elif [[ -n "$MALEA_ROOT_ABS" && "$SOURCE_PROJECT_DIR" == ${MALEA_ROOT_ABS}/* ]]; then
+        REL="${SOURCE_PROJECT_DIR#${MALEA_ROOT_ABS}/}"
+        CONTAINER_PROJECT_DIR="/external/malea_root/${REL}"
+    else
+        DOCKER_EXTRA_MOUNTS+=( "${SOURCE_PROJECT_DIR}:/external/project" )
+        CONTAINER_PROJECT_DIR="/external/project"
+    fi
+
+    NEW_ARGS=( )
+    if [[ ${ARG_DEBUG_OPT} -gt 0 ]]; then
+        NEW_ARGS+=( "--debug" )
+    fi
+    if [[ ${ARG_CLEAN_OPT} -gt 0 ]]; then
+        NEW_ARGS+=( "--clean" )
+    fi
+    if [[ ${ARG_PROJECT_PROFILE_OPT} -gt 0 ]]; then
+        NEW_ARGS+=( "--profile" "$ARG_PROJECT_PROFILE" )
+    fi
+    NEW_ARGS+=( "$ARG_TARGET" )
+    NEW_ARGS+=( "$CONTAINER_PROJECT_DIR" )
+
+    run_in_docker "build-project.sh" "${NEW_ARGS[@]}"
+    exit $?
+fi
+
 # VAGRANT VM EXECUTION BLOCK
 # Non-Linux hosts (macOS, etc.) or forced Vagrant mode require VM execution
 # This entire block sets up VM, syncs project files, and re-executes script inside VM
-if [[ $ARG_FORCE_VAGRANT == true ]] || [[ $HOST_OS != "linux" ]]; then
+if [[ $USE_VAGRANT == true ]]; then
     VAGRANT_PROJECT_BUILD_DIR="${GLB_VAGRANT_PROJECT_BUILD_DIR}/source/${PROJECT_NAME}"
     cd "$GLB_TOP_DIR"
     vagrant up

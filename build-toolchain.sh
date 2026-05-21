@@ -22,14 +22,15 @@ ARGS=( "$@" )
 
 show_usage()
 {
-    echo "USAGE: build-toolchain.sh [-h] [-d] [-c] [-V] [-P] [-K] TARGET"
+    echo "USAGE: build-toolchain.sh [-h] [-d] [-c] [-V] [-D] [-P] [-K] TARGET"
     echo "OPTIONS:"
     echo " -h Show this"
     echo " -d Print scripts debug information"
     echo " -c Cleanup the curent state and start building from scratch"
-    echo " -V Using the Vagrant VM even on Linux"
-    echo " -P Re-provision the vagrant VM; use to reflect some changes to the VM"
-    echo " -K Keep the vagrant VM running after exiting"
+    echo " -V Using the Vagrant VM even on Linux (mutually exclusive with -D)"
+    echo " -D Run the build inside the Docker builder image (mutually exclusive with -V)"
+    echo " -P Re-provision the Vagrant VM, or rebuild the Docker image when used with -D"
+    echo " -K Keep the Vagrant VM running after exiting (no effect with -D)"
     echo
     echo "e.g. build-toolchain.sh grisp2"
 }
@@ -40,9 +41,10 @@ ARG_TARGET=""
 ARG_DEBUG="${DEBUG:-0}"
 ARG_CLEAN=false
 ARG_FORCE_VAGRANT=false
+ARG_FORCE_DOCKER=false
 ARG_PROVISION_VAGRANT=false
 ARG_KEEP_VAGRANT=false
-while getopts "hdcVPK" opt; do
+while getopts "hdcVDPK" opt; do
     case "$opt" in
     d)
         ARG_DEBUG=1
@@ -52,6 +54,9 @@ while getopts "hdcVPK" opt; do
         ;;
     V)
         ARG_FORCE_VAGRANT=true
+        ;;
+    D)
+        ARG_FORCE_DOCKER=true
         ;;
     P)
         ARG_PROVISION_VAGRANT=true
@@ -84,9 +89,46 @@ fi
 source "$( dirname "$0" )/scripts/common.sh" "$ARG_TARGET"
 set_debug_level "$ARG_DEBUG"
 
+if [[ $ARG_FORCE_DOCKER == true && $ARG_FORCE_VAGRANT == true ]]; then
+    error 1 "-D and -V are mutually exclusive"
+fi
+
+# Decide execution mode. Docker only runs on explicit -D for now; Vagrant
+# stays the implicit default on non-Linux hosts to keep existing flows working.
+if [[ $ARG_FORCE_DOCKER == true ]]; then
+    USE_DOCKER=true
+    USE_VAGRANT=false
+elif [[ $ARG_FORCE_VAGRANT == true || $HOST_OS != "linux" ]]; then
+    USE_DOCKER=false
+    USE_VAGRANT=true
+else
+    USE_DOCKER=false
+    USE_VAGRANT=false
+fi
+
+# DOCKER EXECUTION BLOCK
+if [[ $USE_DOCKER == true ]]; then
+    cd "$GLB_TOP_DIR"
+    if [[ $ARG_PROVISION_VAGRANT == true ]]; then
+        "${GLB_TOP_DIR}/docker/build-image.sh" --no-cache
+    fi
+    NEW_ARGS=( )
+    if [[ $ARG_DEBUG -gt 0 ]]; then
+        NEW_ARGS+=( "-d" )
+    fi
+    if [[ $ARG_CLEAN == true ]]; then
+        NEW_ARGS+=( "-c" )
+    fi
+    NEW_ARGS+=( "$ARG_TARGET" )
+    DOCKER_EXTRA_MOUNTS=()
+    DOCKER_EXTRA_ENV=()
+    run_in_docker "build-toolchain.sh" "${NEW_ARGS[@]}"
+    exit $?
+fi
+
 # VAGRANT VM EXECUTION BLOCK
 # Toolchain builds require Linux, so non-Linux hosts use VM
-if [[ $ARG_FORCE_VAGRANT = true ]] || [[ $HOST_OS != "linux" ]]; then
+if [[ $USE_VAGRANT == true ]]; then
     cd "$GLB_TOP_DIR"
     vagrant up
     if [[ $ARG_PROVISION_VAGRANT == true ]]; then

@@ -63,7 +63,10 @@ export CXXFLAGS="-D_LARGEFILE_SOURCE -D_LARGEFILE64_SOURCE -D_FILE_OFFSET_BITS=6
 export LDFLAGS="--sysroot=$GRISP_SDK_SYSROOT"
 export STRIP="${CROSSCOMPILE}-strip"
 export ERL_CFLAGS="-I${ERTS_DIR}/include -I${ERL_INTERFACE_DIR}/include"
-export ERL_LDFLAGS="-L${ERTS_DIR}/lib -L${ERL_INTERFACE_DIR}/lib -lerts -lei"
+# NIFs do not link against erts — erts symbols come from the BEAM that
+# dlopens the NIF at runtime. OTP 28 only ships liberts_internal*.a (no
+# public liberts.so/.a), so listing -lerts here breaks NIF linking.
+export ERL_LDFLAGS="-L${ERL_INTERFACE_DIR}/lib -lei"
 
 # pkg-config
 export PKG_CONFIG="${GRISP_SDK_HOST}/bin/pkg-config"

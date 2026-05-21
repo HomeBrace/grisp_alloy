@@ -42,17 +42,25 @@ show_usage()
     echo " -u | --generate-update"
     echo "    Generate update package in addition of the firmware"
     echo " -V | --force-vagrant"
-    echo "    Using the Vagrant VM even on Linux"
+    echo "    Using the Vagrant VM even on Linux (mutually exclusive with -D)"
+    echo " -D | --docker"
+    echo "    Run the build inside the Docker builder image (mutually exclusive with -V)"
     echo " -P | --provision"
-    echo "    Re-provision the vagrant VM; use to reflect some changes to the VM"
+    echo "    Re-provision the Vagrant VM, or rebuild the Docker image when used with -D"
     echo " -K | --keep-vagrant"
-    echo "    Keep the vagrant VM running after exiting"
+    echo "    Keep the Vagrant VM running after exiting (no effect with -D)"
     echo " -n | --name <NAME>"
     echo "    Firmware name (defaults to first artefact's base name)"
     echo " -v | --version <VERSION>"
     echo "    Firmware version (defaults to first artefact's version)"
     echo " -o | --overlay <OVERLAY_DIR>"
     echo "    Overlay directory to merge into rootfs before packaging"
+    echo "      --dtso <FILE>"
+    echo "    Device Tree overlay source (.dtso) to merge into the kernel DTB."
+    echo "    Repeatable; applied in the order given."
+    echo "      --dtso-dir <DIR>"
+    echo "    Directory of .dtso files; all *.dtso are applied in lexical order."
+    echo "    Repeatable; --dtso-dir entries apply before --dtso entries."
     echo " -S | --security-pack <DIR>"
     echo "    Security pack root directory"
     echo " -s | --serial <SERIAL>"
@@ -77,12 +85,15 @@ args_add c clean ARG_CLEAN flag true false
 args_add i generate-images ARG_GEN_IMAGES flag true false
 args_add u generate-update ARG_GEN_UPDATE_PACKAGE flag true false
 args_add V force-vagrant ARG_FORCE_VAGRANT flag true false
+args_add D docker ARG_FORCE_DOCKER flag true false
 args_add P provision ARG_PROVISION_VAGRANT flag true false
 args_add K keep-vagrant ARG_KEEP_VAGRANT flag true false
 args_add s serial ARG_SERIAL value "00000000"
 args_add n name ARG_FIRMWARE_NAME value ""
 args_add v version ARG_FIRMWARE_VER value ""
 args_add o overlay ARG_OVERLAY_DIR value ""
+args_add "" dtso ARG_DTSO_FILES accum
+args_add "" dtso-dir ARG_DTSO_DIRS accum
 args_add S security-pack ARG_SECPACK_DIR value ""
 args_add p profile ARG_PROFILE value "default"
 args_add U sign-update ARG_SIGN_UPDATE flag true false
@@ -243,10 +254,135 @@ resolve_tarball() {
 
 parse_projects
 
+if [[ $ARG_FORCE_DOCKER == true && $ARG_FORCE_VAGRANT == true ]]; then
+    error 1 "-D/--docker and -V/--force-vagrant are mutually exclusive"
+fi
+
+if [[ $ARG_FORCE_DOCKER == true ]]; then
+    USE_DOCKER=true
+    USE_VAGRANT=false
+elif [[ $ARG_FORCE_VAGRANT == true || $HOST_OS != "linux" ]]; then
+    USE_DOCKER=false
+    USE_VAGRANT=true
+else
+    USE_DOCKER=false
+    USE_VAGRANT=false
+fi
+
+# DOCKER EXECUTION BLOCK
+# External paths (overlay, security pack, project artefacts not under
+# artefacts/) are bind-mounted into a fixed /external/* tree inside the
+# container; their --secpack/--overlay/positional args are rewritten to the
+# in-container paths. Read-only mounts mean no cleanup needed at exit.
+if [[ $USE_DOCKER == true ]]; then
+    cd "$GLB_TOP_DIR"
+    if [[ $ARG_PROVISION_VAGRANT == true ]]; then
+        "${GLB_TOP_DIR}/docker/build-image.sh" --no-cache
+    fi
+
+    DOCKER_EXTRA_MOUNTS=()
+    DOCKER_EXTRA_ENV=()
+    NEW_ARGS=( )
+
+    if [[ ${ARG_DEBUG_OPT} -gt 0 ]]; then
+        NEW_ARGS+=( "--debug" )
+    fi
+    if [[ ${ARG_CLEAN_OPT} -gt 0 ]]; then
+        NEW_ARGS+=( "--clean" )
+    fi
+    if [[ ${ARG_GEN_IMAGES_OPT} -gt 0 ]]; then
+        NEW_ARGS+=( "--generate-images" )
+    fi
+    if [[ ${ARG_GEN_UPDATE_PACKAGE_OPT} -gt 0 ]]; then
+        NEW_ARGS+=( "--generate-update" )
+    fi
+    if [[ ${ARG_SERIAL_OPT} -gt 0 ]]; then
+        NEW_ARGS+=( "--serial" "$ARG_SERIAL" )
+    fi
+    if [[ ${ARG_FIRMWARE_NAME_OPT} -gt 0 ]]; then
+        NEW_ARGS+=( "--name" "$ARG_FIRMWARE_NAME" )
+    fi
+    if [[ ${ARG_FIRMWARE_VER_OPT} -gt 0 ]]; then
+        NEW_ARGS+=( "--version" "$ARG_FIRMWARE_VER" )
+    fi
+    if [[ ${ARG_OVERLAY_DIR_OPT} -gt 0 ]]; then
+        if [[ ! -d "$ARG_OVERLAY_DIR" ]]; then
+            error 1 "Overlay directory not found: $ARG_OVERLAY_DIR"
+        fi
+        DOCKER_EXTRA_MOUNTS+=( "$( readlink_f "$ARG_OVERLAY_DIR" ):/external/overlay:ro" )
+        NEW_ARGS+=( "--overlay" "/external/overlay" )
+    fi
+    # DT overlay dirs come first (numeric prefix preserves order, basenames
+    # may collide between dirs)
+    dtso_dir_idx=0
+    for d in "${ARG_DTSO_DIRS[@]}"; do
+        [[ -z "$d" ]] && continue
+        if [[ ! -d "$d" ]]; then
+            error 1 "DT overlay directory not found: $d"
+        fi
+        container_dir="/external/dtso-dir/$( printf "%02d" "$dtso_dir_idx" )"
+        DOCKER_EXTRA_MOUNTS+=( "$( readlink_f "$d" ):${container_dir}:ro" )
+        NEW_ARGS+=( "--dtso-dir" "$container_dir" )
+        dtso_dir_idx=$(( dtso_dir_idx + 1 ))
+    done
+    dtso_idx=0
+    for f in "${ARG_DTSO_FILES[@]}"; do
+        [[ -z "$f" ]] && continue
+        if [[ ! -f "$f" ]]; then
+            error 1 "DT overlay source not found: $f"
+        fi
+        container_dtso="/external/dtso/$( printf "%02d" "$dtso_idx" )_$( basename "$f" )"
+        DOCKER_EXTRA_MOUNTS+=( "$( readlink_f "$f" ):${container_dtso}:ro" )
+        NEW_ARGS+=( "--dtso" "$container_dtso" )
+        dtso_idx=$(( dtso_idx + 1 ))
+    done
+    if [[ ${ARG_SECPACK_DIR_OPT} -gt 0 ]]; then
+        if [[ ! -d "$ARG_SECPACK_DIR" ]]; then
+            error 1 "Security pack directory not found: $ARG_SECPACK_DIR"
+        fi
+        if [[ ! -x "$ARG_SECPACK_DIR/secpack" ]]; then
+            error 1 "Security pack 'secpack' script missing or not executable in: $ARG_SECPACK_DIR"
+        fi
+        if [[ $ARG_SIGN_UPDATE == true ]]; then
+            if [[ ! -f "$ARG_SECPACK_DIR/grisp_updater/verification/signature_key.pem" ]]; then
+                error 1 "Security pack signing key not found: $ARG_SECPACK_DIR/grisp_updater/verification/signature_key.pem"
+            fi
+        fi
+        DOCKER_EXTRA_MOUNTS+=( "$( readlink_f "$ARG_SECPACK_DIR" ):/external/secpack:ro" )
+        NEW_ARGS+=( "--security-pack" "/external/secpack" )
+        if [[ ${ARG_PROFILE_OPT} -gt 0 ]]; then
+            NEW_ARGS+=( "--profile" "$ARG_PROFILE" )
+        fi
+        if [[ $ARG_SIGN_UPDATE == true ]]; then
+            NEW_ARGS+=( "--sign-update" )
+        fi
+    fi
+
+    NEW_ARGS+=( "$ARG_TARGET" )
+
+    for i in "${!PROJECT_ARTEFACTS[@]}"; do
+        local_host_path="${PROJECT_ARTEFACTS[$i]}"
+        if [[ "$local_host_path" == ${GLB_TOP_DIR}/* ]]; then
+            REL_PATH="${local_host_path#${GLB_TOP_DIR}/}"
+            NEW_ARGS+=( "${GLB_DOCKER_WORKDIR}/${REL_PATH}" )
+        else
+            container_path="/external/uploads/$( basename "$local_host_path" )"
+            DOCKER_EXTRA_MOUNTS+=( "$( readlink_f "$local_host_path" ):${container_path}:ro" )
+            NEW_ARGS+=( "$container_path" )
+        fi
+        if [[ -n "${PROJECT_NAMES[$i]}" ]]; then
+            NEW_ARGS+=( "--name" "${PROJECT_NAMES[$i]}" )
+        fi
+    done
+
+    run_in_docker "build-firmware.sh" "${NEW_ARGS[@]}"
+    exit $?
+fi
+
 # VAGRANT VM EXECUTION BLOCK
 # Non-Linux hosts (macOS, etc.) or forced Vagrant mode require VM execution
 # This entire block sets up VM, syncs project files, and re-executes script inside VM
-if [[ $ARG_FORCE_VAGRANT == true ]] || [[ $HOST_OS != "linux" ]]; then
+if [[ $USE_VAGRANT == true ]]; then
     cd "$GLB_TOP_DIR"
     vagrant up
     if [[ $ARG_PROVISION_VAGRANT == true ]]; then
@@ -665,6 +801,19 @@ cat $ALLOY_FIRMWARE_FILE
 # BOOT SCHEME PACKAGING
 # These functions are provided by the boot scheme plugin loaded earlier
 # Each boot scheme handles bootloader/kernel packaging differently
+
+# DEVICE TREE OVERLAYS
+# Compile and merge any --dtso / --dtso-dir overlays into the SDK base DTB,
+# then route the merged DTB through the bootscheme via BOOTSCHEME_DTB_PATH.
+source "${GLB_SCRIPT_DIR}/plugins/dt-overlays.sh"
+DT_OVERLAY_FILES=()
+collect_dt_overlays DT_OVERLAY_FILES ARG_DTSO_FILES ARG_DTSO_DIRS
+if [[ ${#DT_OVERLAY_FILES[@]} -gt 0 ]]; then
+    BASE_DTB="${GLB_SDK_DIR}/images/${BOOTSCHEME_DTB_FILENAME}"
+    MERGED_DTB="${FIRMWARE_DIR}/$( basename "$BOOTSCHEME_DTB_FILENAME" .dtb )-merged.dtb"
+    apply_dt_overlays "$BASE_DTB" "$MERGED_DTB" "${DT_OVERLAY_FILES[@]}"
+    export BOOTSCHEME_DTB_PATH="$MERGED_DTB"
+fi
 
 # Package bootloader (U-Boot, AHAB container, etc.)
 bootscheme_package_bootloader

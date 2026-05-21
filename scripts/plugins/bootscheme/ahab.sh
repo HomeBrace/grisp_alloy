@@ -11,7 +11,10 @@ bootscheme_package_kernel() {
     local ITS_WITH_RAMFS_TEMPLATE="${GLB_SDK_DIR}/images/${BOOTSCHEME_KERNEL_ITS_WITH_RAMFS}"
     local ITS_WITHOUT_RAMFS_TEMPLATE="${GLB_SDK_DIR}/images/${BOOTSCHEME_KERNEL_ITS_WITHOUT_RAMFS}"
     local KERNEL_FILE="${GLB_SDK_DIR}/images/${BOOTSCHEME_KERNEL_FILENAME}"
-    local DTB_FILE="${GLB_SDK_DIR}/images/${BOOTSCHEME_DTB_FILENAME}"
+    # BOOTSCHEME_DTB_PATH (absolute) wins over BOOTSCHEME_DTB_FILENAME
+    # (filename inside SDK images/), so build-firmware.sh can route a
+    # merged-with-overlays DTB through here.
+    local DTB_FILE="${BOOTSCHEME_DTB_PATH:-${GLB_SDK_DIR}/images/${BOOTSCHEME_DTB_FILENAME}}"
 
     if [[ ! -f "${MKIMAGE}" ]]; then
         error 1 "mkimage not found at ${MKIMAGE}"

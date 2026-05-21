@@ -42,11 +42,13 @@ show_usage()
     echo " -c | --clean"
     echo "    Cleanup the current state and start building from scratch."
     echo " -V | --force-vagrant"
-    echo "    Using the Vagrant VM even on Linux."
+    echo "    Using the Vagrant VM even on Linux (mutually exclusive with -D)."
+    echo " -D | --docker"
+    echo "    Run the build inside the Docker builder image (mutually exclusive with -V)."
     echo " -P | --provision"
-    echo "    Re-provision the vagrant VM; use to reflect some changes to the VM."
+    echo "    Re-provision the Vagrant VM, or rebuild the Docker image when used with -D."
     echo " -K | --keep-vagrant"
-    echo "    Keep the vagrant VM running after exiting."
+    echo "    Keep the Vagrant VM running after exiting (no effect with -D)."
     echo " -p | --clean-package <PACKAGE_PREFIX>"
     echo "    Clean given package prefix; can be used with --rebuild to rebuild a package."
     echo
@@ -62,6 +64,7 @@ args_add b print-buildroot ARG_BRCMD flag true false
 args_add r rebuild ARG_REBUILD flag true false
 args_add c clean ARG_CLEAN flag true false
 args_add V force-vagrant ARG_FORCE_VAGRANT flag true false
+args_add D docker ARG_FORCE_DOCKER flag true false
 args_add P provision ARG_PROVISION_VAGRANT flag true false
 args_add K keep-vagrant ARG_KEEP_VAGRANT flag true false
 args_add p clean-package ARG_CLEAN_PACKAGES accum
@@ -91,14 +94,24 @@ fi
 source "$( dirname "$0" )/scripts/common.sh" "$ARG_TARGET"
 set_debug_level "$ARG_DEBUG"
 
-# VAGRANT VM EXECUTION BLOCK
-# Buildroot requires Linux environment for proper cross-compilation
-if [[ $ARG_FORCE_VAGRANT == true ]] || [[ $HOST_OS != "linux" ]]; then
-    cd "$GLB_TOP_DIR"
-    vagrant up
-    if [[ $ARG_PROVISION_VAGRANT == true ]]; then
-        vagrant provision
-    fi
+if [[ $ARG_FORCE_DOCKER == true && $ARG_FORCE_VAGRANT == true ]]; then
+    error 1 "-D/--docker and -V/--force-vagrant are mutually exclusive"
+fi
+
+if [[ $ARG_FORCE_DOCKER == true ]]; then
+    USE_DOCKER=true
+    USE_VAGRANT=false
+elif [[ $ARG_FORCE_VAGRANT == true || $HOST_OS != "linux" ]]; then
+    USE_DOCKER=false
+    USE_VAGRANT=true
+else
+    USE_DOCKER=false
+    USE_VAGRANT=false
+fi
+
+# Build NEW_ARGS once; both branches (Docker and Vagrant) feed the same
+# in-container build-sdk.sh invocation.
+build_sdk_passthrough_args() {
     NEW_ARGS=( )
     if [[ ${ARG_DEBUG_OPT} -gt 0 ]]; then
         NEW_ARGS+=( "--debug" )
@@ -116,6 +129,30 @@ if [[ $ARG_FORCE_VAGRANT == true ]] || [[ $HOST_OS != "linux" ]]; then
         NEW_ARGS+=( "--clean-package" "$p" )
     done
     NEW_ARGS+=( "$ARG_TARGET" )
+}
+
+# DOCKER EXECUTION BLOCK
+if [[ $USE_DOCKER == true ]]; then
+    cd "$GLB_TOP_DIR"
+    if [[ $ARG_PROVISION_VAGRANT == true ]]; then
+        "${GLB_TOP_DIR}/docker/build-image.sh" --no-cache
+    fi
+    build_sdk_passthrough_args
+    DOCKER_EXTRA_MOUNTS=()
+    DOCKER_EXTRA_ENV=()
+    run_in_docker "build-sdk.sh" "${NEW_ARGS[@]}"
+    exit $?
+fi
+
+# VAGRANT VM EXECUTION BLOCK
+# Buildroot requires Linux environment for proper cross-compilation
+if [[ $USE_VAGRANT == true ]]; then
+    cd "$GLB_TOP_DIR"
+    vagrant up
+    if [[ $ARG_PROVISION_VAGRANT == true ]]; then
+        vagrant provision
+    fi
+    build_sdk_passthrough_args
     if [[ $ARG_KEEP_VAGRANT == false ]]; then
         trap "cd '$GLB_TOP_DIR'; vagrant halt" EXIT
     fi

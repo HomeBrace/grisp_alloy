@@ -62,6 +62,35 @@ brew install vagrant qemu
 
 The scripts start the VM automatically when needed. Use `-P` to reprovision.
 
+A Docker-based alternative is also available — see [Docker (alternative to Vagrant)](#docker-alternative-to-vagrant) below.
+
+### Docker (alternative to Vagrant)
+
+The build scripts can run inside a Docker container instead of the Vagrant VM.
+Pass `-D` (or `--docker` for the long-form scripts) to any `build-*.sh` invocation:
+
+```sh
+./build-toolchain.sh -D grisp2
+./build-sdk.sh -D grisp2
+./build-project.sh grisp2 samples/hello_grisp
+./build-firmware.sh -D grisp2 hello_grisp
+```
+
+The first `-D` invocation builds the `grisp-alloy-builder:latest` image
+(`docker/Dockerfile`); subsequent runs reuse it. Use `-P` together with `-D`
+to force a `--no-cache` rebuild of the image.
+
+Build state is kept in three named volumes (`grisp-alloy-cache`,
+`grisp-alloy-build`, `grisp-alloy-sdk`) to keep heavy IO off the macOS bind
+mount. Outputs land in `artefacts/` on the host as before.
+
+`-D` and `-V` (force Vagrant) are mutually exclusive. On non-Linux hosts
+without `-D`, the scripts still fall back to Vagrant by default.
+
+**Disk note**: on macOS, named volumes live inside Docker Desktop's VM disk.
+A toolchain + SDK build can need 30–50 GB; bump Docker Desktop's disk
+allocation (Settings → Resources) before the first build.
+
 ### Vagrant Variables (Useful Overrides)
 
 You can control `Vagrantfile` behavior with environment variables:

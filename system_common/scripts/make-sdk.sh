@@ -60,6 +60,32 @@ cp -R "$BUILD_DIR/images" "$GLB_SDK_DIR"
 # Copy the staging link that should point to the host directory
 cp -R "$BUILD_DIR/staging" "$GLB_SDK_DIR"
 
+# Ship the kernel DT include tree so build-firmware.sh can compile project
+# device-tree overlays (.dtso) with the same headers the kernel was built
+# against. Need: dt-bindings/* (consumer macros) and freescale/imx8mp-pinfunc.h
+# (and siblings), referenced via #include "imx8mp-pinfunc.h".
+# Pick the linux-* dir that holds the kernel source — siblings like
+# linux-firmware-* match the glob too, so identify via include/dt-bindings.
+LINUX_SRC_DIR=""
+for d in "$BUILD_DIR/build/linux-"*/; do
+    if [[ -d "${d}include/dt-bindings" ]]; then
+        LINUX_SRC_DIR="${d%/}"
+        break
+    fi
+done
+if [[ -z "$LINUX_SRC_DIR" ]]; then
+    error 1 "Cannot locate kernel source dir under $BUILD_DIR/build/linux-* (looking for include/dt-bindings)"
+fi
+DT_INCLUDE_OUT="$GLB_SDK_DIR/dt-includes"
+rm -rf "$DT_INCLUDE_OUT"
+mkdir -p "$DT_INCLUDE_OUT/freescale"
+cp -R "$LINUX_SRC_DIR/include/dt-bindings" "$DT_INCLUDE_OUT/dt-bindings"
+# Copy every freescale pinfunc.h (one per SoC) — overlays #include the file
+# matching their target SoC.
+find "$LINUX_SRC_DIR/arch/arm64/boot/dts/freescale" \
+    -maxdepth 1 -name "*-pinfunc*.h" \
+    -exec cp {} "$DT_INCLUDE_OUT/freescale/" \;
+
 tar -C "${GLB_SDK_BASE_DIR}/.." -cf - "$GLB_SDK_NAME" \
     | pv -s $( du -sb "$GLB_SDK_BASE_DIR" | awk '{print $1}' ) \
     | gzip > "$GLB_ARTEFACTS_DIR/${GLB_SDK_FILENAME}"

@@ -108,6 +108,71 @@ install_sdk() {
     fi
 }
 
+# Docker builder configuration. Named volumes mirror the persistent state
+# the Vagrant cache disk used to hold (Buildroot dl cache, _build tree,
+# extracted SDK), keeping the slow IO out of the macOS bind mount.
+GLB_DOCKER_IMAGE="${GRISP_ALLOY_DOCKER_IMAGE:-grisp-alloy-builder:latest}"
+GLB_DOCKER_CACHE_VOLUME="${GRISP_ALLOY_DOCKER_CACHE_VOLUME:-grisp-alloy-cache}"
+GLB_DOCKER_BUILD_VOLUME="${GRISP_ALLOY_DOCKER_BUILD_VOLUME:-grisp-alloy-build}"
+GLB_DOCKER_SDK_VOLUME="${GRISP_ALLOY_DOCKER_SDK_VOLUME:-grisp-alloy-sdk}"
+GLB_DOCKER_WORKDIR="/work"
+
+# Build the docker image if it isn't present yet.
+ensure_docker_image() {
+    if ! command -v docker > /dev/null 2>&1; then
+        error 1 "docker not found in PATH; install Docker Desktop or Docker Engine"
+    fi
+    if ! docker image inspect "$GLB_DOCKER_IMAGE" > /dev/null 2>&1; then
+        echo "Builder image '$GLB_DOCKER_IMAGE' not found, building..."
+        "${GLB_TOP_DIR}/docker/build-image.sh" \
+            || error 1 "Failed to build builder image"
+    fi
+}
+
+# Run a build script inside the docker builder image.
+# Usage: run_in_docker SCRIPT_BASENAME [ARGS...]
+# Optional caller-set arrays (initialise to () before populating):
+#   DOCKER_EXTRA_MOUNTS=( "host_path:container_path[:opts]" ... )
+#   DOCKER_EXTRA_ENV=( "VAR=value" ... )
+run_in_docker() {
+    local script_name="$1"; shift
+
+    ensure_docker_image
+
+    local docker_flags=(--rm)
+    if [[ -t 0 && -t 1 ]]; then
+        docker_flags+=(-it)
+    elif [[ -t 0 ]]; then
+        docker_flags+=(-i)
+    fi
+
+    local extra_mount_flags=()
+    local m
+    for m in "${DOCKER_EXTRA_MOUNTS[@]}"; do
+        [[ -n "$m" ]] && extra_mount_flags+=(-v "$m")
+    done
+
+    local extra_env_flags=()
+    local e
+    for e in "${DOCKER_EXTRA_ENV[@]}"; do
+        [[ -n "$e" ]] && extra_env_flags+=(-e "$e")
+    done
+
+    docker run "${docker_flags[@]}" \
+        -e "HOST_UID=$(id -u)" \
+        -e "HOST_GID=$(id -g)" \
+        -e "GLB_DEBUG=${GLB_DEBUG}" \
+        -v "${GLB_TOP_DIR}:${GLB_DOCKER_WORKDIR}" \
+        -v "${GLB_DOCKER_CACHE_VOLUME}:${GLB_DOCKER_WORKDIR}/_cache" \
+        -v "${GLB_DOCKER_BUILD_VOLUME}:${GLB_DOCKER_WORKDIR}/_build" \
+        -v "${GLB_DOCKER_SDK_VOLUME}:/opt/grisp_alloy_sdk" \
+        "${extra_mount_flags[@]}" \
+        "${extra_env_flags[@]}" \
+        -w "$GLB_DOCKER_WORKDIR" \
+        "$GLB_DOCKER_IMAGE" \
+        "${GLB_DOCKER_WORKDIR}/${script_name}" "$@"
+}
+
 # OS and architecture detection
 BUILD_ARCH="$(uname -m)"
 BUILD_OS="$(uname -s)"
