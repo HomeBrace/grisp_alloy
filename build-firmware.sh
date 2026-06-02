@@ -432,6 +432,39 @@ if [[ $USE_VAGRANT == true ]]; then
         NEW_ARGS=( ${NEW_ARGS[@]} "--overlay" "${GLB_VAGRANT_FIRMWARE_BUILD_DIR}/overlay" )
     fi
 
+    # DT overlay handling in VM: rsync each --dtso-dir / --dtso into the VM and
+    # rewrite paths. Mirrors the Docker block: dtso-dirs first (numeric prefix
+    # preserves order, basenames may collide between dirs), then dtso files.
+    # Both are placed under $GLB_VAGRANT_FIRMWARE_BUILD_DIR/dtso* so the trap-less
+    # firmware build dir is reused; a fresh rm clears stale overlays per run.
+    if [[ ${#ARG_DTSO_DIRS[@]} -gt 0 || ${#ARG_DTSO_FILES[@]} -gt 0 ]]; then
+        vagrant exec rm -rf "$GLB_VAGRANT_FIRMWARE_BUILD_DIR/dtso-dir" "$GLB_VAGRANT_FIRMWARE_BUILD_DIR/dtso"
+    fi
+    dtso_dir_idx=0
+    for d in "${ARG_DTSO_DIRS[@]}"; do
+        [[ -z "$d" ]] && continue
+        if [[ ! -d "$d" ]]; then
+            error 1 "DT overlay directory not found: $d"
+        fi
+        vm_dtso_dir="${GLB_VAGRANT_FIRMWARE_BUILD_DIR}/dtso-dir/$( printf "%02d" "$dtso_dir_idx" )"
+        vagrant exec mkdir -p "$vm_dtso_dir"
+        rsync -qav -e "ssh -F ${GLB_TOP_DIR}/.vagrant.ssh_config" "$d/" "vagrant@default:${vm_dtso_dir}/"
+        NEW_ARGS=( ${NEW_ARGS[@]} "--dtso-dir" "$vm_dtso_dir" )
+        dtso_dir_idx=$(( dtso_dir_idx + 1 ))
+    done
+    dtso_idx=0
+    for f in "${ARG_DTSO_FILES[@]}"; do
+        [[ -z "$f" ]] && continue
+        if [[ ! -f "$f" ]]; then
+            error 1 "DT overlay source not found: $f"
+        fi
+        vm_dtso="${GLB_VAGRANT_FIRMWARE_BUILD_DIR}/dtso/$( printf "%02d" "$dtso_idx" )_$( basename "$f" )"
+        vagrant exec mkdir -p "${GLB_VAGRANT_FIRMWARE_BUILD_DIR}/dtso"
+        rsync -qav -e "ssh -F ${GLB_TOP_DIR}/.vagrant.ssh_config" "$f" "vagrant@default:${vm_dtso}"
+        NEW_ARGS=( ${NEW_ARGS[@]} "--dtso" "$vm_dtso" )
+        dtso_idx=$(( dtso_idx + 1 ))
+    done
+
     # Security pack handling in VM: copy minimal content and pass path
     if [[ ${ARG_SECPACK_DIR_OPT} -gt 0 ]]; then
         if [[ ! -d "$ARG_SECPACK_DIR" ]]; then
