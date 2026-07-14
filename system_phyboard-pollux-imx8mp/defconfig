@@ -97,7 +97,11 @@ BR2_PACKAGE_FIRMWARE_IMX_SDMA=y
 # phytool: raw MDIO PHY register access. The DP83867 (eth0) driver has no
 # ethtool cable-test support, so we read its registers directly (ANLPAR etc.)
 # and can drive its TDR sequence (TI SNLA334) over MDIO instead.
+BR2_PACKAGE_MDIO_TOOLS=y
 BR2_PACKAGE_PHYTOOL=y
+BR2_PACKAGE_I2C_TOOLS=y
+BR2_PACKAGE_USBUTILS=y
+
 
 # RT testing and debugging tools
 BR2_PACKAGE_RT_TESTS=y
