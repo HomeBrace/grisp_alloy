@@ -569,6 +569,21 @@ bootscheme_setup ${BOOTSCHEME}
 PROJECTS_BASE_DIR="${GLB_FIRMWARE_BUILD_DIR}/projects"
 SDK_ROOTFS="$GLB_SDK_DIR/images/rootfs.squashfs"
 SDK_FWUP_CONFIG="$GLB_SDK_DIR/images/fwup.conf"
+
+# The prebuilt SDK bundles a snapshot of fwup.conf under images/. `install_sdk`
+# only unpacks the SDK when it is absent, so that snapshot goes stale relative to
+# the checked-in system fwup.conf and local packaging fixes (e.g. eMMC bootmed /
+# bootargs) never take effect. Keep them in sync here: this runs in BOTH the
+# Docker and Vagrant build environments (each re-executes this script in-env,
+# with the system dir mounted/provisioned), so the checked-in fwup.conf is always
+# authoritative — no manual volume/VM patching required.
+if [[ -f "${GLB_TARGET_SYSTEM_DIR}/fwup.conf" ]]; then
+    if ! cmp -s "${GLB_TARGET_SYSTEM_DIR}/fwup.conf" "$SDK_FWUP_CONFIG"; then
+        echo "Syncing checked-in fwup.conf into the SDK (${SDK_FWUP_CONFIG})"
+        cp -f "${GLB_TARGET_SYSTEM_DIR}/fwup.conf" "$SDK_FWUP_CONFIG"
+    fi
+fi
+
 GLB_VCS_TAG="unknown"
 if [[ -d "${GLB_TOP_DIR}/.git" ]]; then
     GLB_VCS_TAG="$( "${GLB_SCRIPT_DIR}/git-info.sh" -D -c "$GLB_TOP_DIR" )"
