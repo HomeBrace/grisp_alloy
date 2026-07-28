@@ -103,6 +103,29 @@ BR2_PACKAGE_I2C_TOOLS=y
 BR2_PACKAGE_USBUTILS=y
 
 
+# Wi-Fi — Ezurio Sterling LWB5+ (CYW4373) on SDIO/usdhc1, brcmfmac.
+# The kernel side already works (CONFIG_BRCMFMAC=m with BRCMFMAC_SDIO implied by
+# CONFIG_MMC=y; the firmware blobs ship via rootfs_firmware_overlay/lib/firmware/brcm),
+# but there was no userspace at all to drive the radio: busybox 1.36.1 has no
+# wireless applets, so without these packages you cannot even scan.
+#   WPA3      — SAE, so the chair is not limited to WPA2-PSK
+#   AP_SUPPORT + HOTSPOT — SoftAP fallback so a phone can reach the device
+#                          directly when no known network is in range
+#   CTRL_IFACE/CLI — wpa_cli status polling from the Elixir supervisor
+#   WIRELESS_REGDB — otherwise cfg80211 stays in world domain "00"
+#                    ("failed to load regulatory.db"), which passive-scans
+#                    most channels
+# NL80211 is the buildroot default driver backend and needs no explicit symbol.
+BR2_PACKAGE_WIRELESS_REGDB=y
+BR2_PACKAGE_WPA_SUPPLICANT=y
+BR2_PACKAGE_WPA_SUPPLICANT_CLI=y
+BR2_PACKAGE_WPA_SUPPLICANT_CTRL_IFACE=y
+BR2_PACKAGE_WPA_SUPPLICANT_WPA3=y
+BR2_PACKAGE_WPA_SUPPLICANT_AP_SUPPORT=y
+BR2_PACKAGE_WPA_SUPPLICANT_HOTSPOT=y
+BR2_PACKAGE_WPA_SUPPLICANT_DEBUG_SYSLOG=y
+BR2_PACKAGE_IW=y
+
 # RT testing and debugging tools
 BR2_PACKAGE_RT_TESTS=y
 BR2_PACKAGE_STRESS_NG=y
