@@ -1,0 +1,74 @@
+From: HomeBrace GmbH <info@homebrace.com>
+Date: Thu, 30 Jul 2026 00:00:00 +0000
+Subject: [PATCH] i2c: imx: drop redundant per-transfer clk_get_rate()
+
+i2c_imx_start() calls clk_get_rate() on every transfer, which takes the
+global clk framework prepare_lock. That reintroduces the exact lock edge
+removed upstream by commit 90ad2cbe88c2 ("i2c: imx: use clk notifier for
+rate changes"), whose whole point was to stop taking prepare_lock per
+transfer.
+
+The caching infrastructure from that commit is already present here and
+fully functional: i2c_imx->ifdr holds the divider, it is computed once in
+i2c_imx_probe(), and i2c_imx_clk_notifier_call() recomputes it whenever
+the clock rate actually changes. i2c_imx_start() then writes the cached
+i2c_imx->ifdr regardless, so the recomputation is pure overhead — plus a
+lock acquisition that deadlocks.
+
+Taking prepare_lock inside an i2c transfer creates an ABBA cycle with any
+i2c-attached clock provider, which registers its clock while holding
+prepare_lock and then reaches for i2c. On phyCORE-i.MX8M Plus this is hit
+by the on-module RV-3028 RTC, and lockdep reports:
+
+  Chain exists of:
+    rtc_rv3028:944:(&regmap_config)->lock --> i2c_register_adapter --> prepare_lock
+
+         CPU0                    CPU1
+         ----                    ----
+    lock(prepare_lock);
+                                 lock(i2c_register_adapter);
+                                 lock(prepare_lock);
+    lock(rtc_rv3028:944:(&regmap_config)->lock);
+
+                  *** DEADLOCK ***
+
+  rv3028_probe -> devm_clk_register -> __clk_register [holds prepare_lock]
+               -> rv3028_clkout_recalc_rate -> regmap_read [wants regmap lock]
+
+  <any i2c regmap op> [holds regmap lock] -> i2c_transfer -> i2c_imx_start
+               -> clk_get_rate -> clk_prepare_lock [wants prepare_lock]
+
+The window is opened by the PCA9450 PMIC probing asynchronously
+(async_run_entry_fn: regulator_set_voltage -> regmap -> i2c ->
+clk_get_rate -> prepare_lock) while the deferred-probe worker is inside
+rv3028_probe. The result is an intermittent silent boot hang: the probe
+workers deadlock while the rest of the kernel keeps running.
+
+This is the same class of bug described in "imx i2c vs clk framework
+deadlock fix" (Lucas Stach, 2017, never merged) and fixed for the sibling
+controller by "i2c: lpi2c: cache peripheral clock rate".
+
+Restore the upstream behaviour by dropping the redundant call. The
+notifier keeps ifdr current, so there is no functional change beyond not
+taking prepare_lock on every transfer. This fixes every i2c-attached
+clock provider on the SoC, not just the RTC.
+
+Signed-off-by: HomeBrace GmbH <info@homebrace.com>
+---
+ drivers/i2c/busses/i2c-imx.c | 4 ----
+ 1 file changed, 4 deletions(-)
+
+diff --git a/drivers/i2c/busses/i2c-imx.c b/drivers/i2c/busses/i2c-imx.c
+--- a/drivers/i2c/busses/i2c-imx.c
++++ b/drivers/i2c/busses/i2c-imx.c
+@@ -722,10 +722,6 @@ static int i2c_imx_start(struct imx_i2c_struct *i2c_imx, bool atomic)
+ 	unsigned int temp = 0;
+ 	int result;
+
+-	result = i2c_imx_set_clk(i2c_imx, clk_get_rate(i2c_imx->clk));
+-	if (result)
+-		return result;
+-
+ 	imx_i2c_write_reg(i2c_imx->ifdr, i2c_imx, IMX_I2C_IFDR);
+ 	/* Enable I2C controller */
+ 	imx_i2c_write_reg(i2c_imx->hwdata->i2sr_clr_opcode, i2c_imx, IMX_I2C_I2SR);

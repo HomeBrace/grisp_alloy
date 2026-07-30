@@ -7,7 +7,15 @@ CONFIG_THERMAL_EMULATION=y
 # debug
 #CONFIG_PM_DEBUG=y
 #CONFIG_PM_TEST_SUSPEND=y
-#CONFIG_PROVE_LOCKING=y
+# --- boot-hang instrumentation (2026-07-30) ---
+# The deferred-probe worker wedges in the PCA9450/i2c-0 window while the rest
+# of the kernel stays alive. Make it self-report instead of bisecting config.
+CONFIG_DEBUG_KERNEL=y
+CONFIG_DETECT_HUNG_TASK=y
+CONFIG_WQ_WATCHDOG=y
+# Lockdep — HEAVY. Slows boot measurably and can perturb this timing-sensitive
+# race. Comment this line out first if the hang stops reproducing.
+CONFIG_PROVE_LOCKING=y
 #CONFIG_DEBUG_PREEMPT=y
 #CONFIG_DEBUG_RT_MUTEXES=y
 #CONFIG_RT_PUSH_IPI=y
@@ -28,7 +36,11 @@ CONFIG_LOCALVERSION="-ktn-rt"
 CONFIG_SYSVIPC=y
 CONFIG_NO_HZ_FULL=y
 CONFIG_HIGH_RES_TIMERS=y
-CONFIG_PREEMPT_RT=y
+# PREEMPT_RT is NOT available on NXP lf-6.6.y — there is no RT patchset in
+# patches/linux/, so olddefconfig silently dropped it and the kernel built as
+# PREEMPT_NONE (/proc/version showed "#1 SMP", no marker). Set the model
+# explicitly. PHYTEC's working BSP uses PREEMPT.
+CONFIG_PREEMPT=y
 CONFIG_IRQ_TIME_ACCOUNTING=y
 CONFIG_BSD_PROCESS_ACCT=y
 CONFIG_BSD_PROCESS_ACCT_V3=y
@@ -464,6 +476,7 @@ CONFIG_RTC_DRV_MC13XXX=y
 CONFIG_RTC_DRV_PCF8523=y
 CONFIG_RTC_DRV_PCF8563=y
 CONFIG_RTC_DRV_PL031=y
+# disable temporarely to see if it's the reason for hanging boots 
 CONFIG_RTC_DRV_RV3028=y
 CONFIG_RTC_DRV_RV8803=y
 CONFIG_RTC_DRV_RX8581=y
