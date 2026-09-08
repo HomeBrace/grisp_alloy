@@ -42,6 +42,14 @@ RUN userdel -r ubuntu 2>/dev/null || true; \
     mkdir -p /opt/grisp_alloy_sdk && \
     chown -R builder:builder /opt/grisp_alloy_sdk
 
+# Ubuntu 24.04's git (libcurl-gnutls + HTTP/2) intermittently corrupts the
+# ref advertisement when talking to GitHub ("expected flush after ref
+# listing" / bogus credential prompts). Forcing HTTP/1.1 avoids it.
+RUN git config --system http.version HTTP/1.1
+# Bind-mounted /work is owned by the host uid; exempt it from git's
+# dubious-ownership guard so git-lfs works inside the container.
+RUN git config --system --add safe.directory /work
+
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
